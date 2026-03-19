@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"math"
 	"net"
@@ -168,7 +169,7 @@ func mapBinanceTradeToPayload(raw []byte, now time.Time) (cryptoData, error) {
 	}
 
 	if math.IsNaN(price) || math.IsInf(price, 0) {
-		return cryptoData{}, strconv.ErrSyntax
+		return cryptoData{}, errors.New("invalid non-finite price value")
 	}
 
 	timestamp := now.Unix()
@@ -177,7 +178,7 @@ func mapBinanceTradeToPayload(raw []byte, now time.Time) (cryptoData, error) {
 	}
 
 	return cryptoData{
-		Symbol:    "BTC/USD",
+		Symbol:    "BTC/USDT",
 		Price:     price,
 		Timestamp: timestamp,
 	}, nil

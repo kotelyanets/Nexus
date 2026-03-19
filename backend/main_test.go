@@ -14,7 +14,7 @@ func TestMapBinanceTradeToPayload_ValidMessage(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	if payload.Symbol != "BTC/USD" {
+	if payload.Symbol != "BTC/USDT" {
 		t.Fatalf("unexpected symbol: %s", payload.Symbol)
 	}
 
@@ -37,7 +37,7 @@ func TestMapBinanceTradeToPayload_InvalidPrice(t *testing.T) {
 	}
 }
 
-func TestMapBinanceTradeToPayload_UsesCurrentTimeWhenMissingTradeTime(t *testing.T) {
+func TestMapBinanceTradeToPayload_FallbackToCurrentTime(t *testing.T) {
 	now := time.Unix(1234567890, 0)
 	raw := []byte(`{"p":"123.45"}`)
 
