@@ -58,16 +58,13 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, rdb *redis.Client) 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	for {
-		select {
-		case <-ticker.C:
-			// Simulating a real-time stream message
-			mockData := fmt.Sprintf(`{"symbol": "BTC/USD", "price": 65000.0, "timestamp": %d}`, time.Now().Unix())
-			err := conn.WriteMessage(websocket.TextMessage, []byte(mockData))
-			if err != nil {
-				log.Println("Client disconnected or error writing message:", err)
-				return
-			}
+	for range ticker.C {
+		// Simulating a real-time stream message
+		mockData := fmt.Sprintf(`{"symbol": "BTC/USD", "price": %.2f, "timestamp": %d}`, 65000.0+float64(time.Now().Unix()%100), time.Now().Unix())
+		err := conn.WriteMessage(websocket.TextMessage, []byte(mockData))
+		if err != nil {
+			log.Println("Client disconnected or error writing message:", err)
+			return
 		}
 	}
 }
