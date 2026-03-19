@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -17,28 +17,51 @@ import {
 } from "recharts";
 
 export default function DashboardPage() {
-  const { data, status, throughput, pps } = useWebSocket("ws://localhost:8080/ws");
+  const { data: rawData, status, throughput, pps } = useWebSocket("ws://localhost:8080/ws");
+  const [data, setData] = useState<CryptoData | null>(null);
   const [history, setHistory] = useState<CryptoData[]>([]);
   const [logs, setLogs] = useState<{ id: string; msg: string; time: string }[]>([]);
 
-  // Update history when new data arrives
-  useEffect(() => {
-    if (data) {
-      setHistory((prev) => {
-        const newHistory = [...prev, data].slice(-30);
-        return newHistory;
-      });
+  // Smooth data buffer
+  const latestDataRef = useRef<CryptoData | null>(null);
 
-      setLogs((prev) => [
-        {
-          id: Math.random().toString(36).substr(2, 9),
-          msg: `Price Update: BTC/USDT @ $${data.price.toLocaleString()}`,
-          time: new Date().toLocaleTimeString(),
-        },
-        ...prev,
-      ].slice(0, 10));
+  // Buffer incoming messages
+  useEffect(() => {
+    if (rawData) {
+      latestDataRef.current = rawData;
+      // Immediate update for the "Live Stats" text to feel responsive
+      setData(rawData);
     }
-  }, [data]);
+  }, [rawData]);
+
+  // Aggregated update for the Chart and Logs (every 500ms) to prevent "too fast" movement
+  useEffect(() => {
+    const ticker = setInterval(() => {
+      if (latestDataRef.current) {
+        const currentData = latestDataRef.current;
+        
+        setHistory((prev) => {
+          // Increase capacity to 60 points for a wider view
+          const newHistory = [...prev, currentData].slice(-60);
+          return newHistory;
+        });
+
+        setLogs((prev) => [
+          {
+            id: Math.random().toString(36).substr(2, 9),
+            msg: `Price Update: BTC/USDT @ $${currentData.price.toLocaleString()}`,
+            time: new Date().toLocaleTimeString(),
+          },
+          ...prev,
+        ].slice(0, 10));
+
+        // Clear ref buffer after consuming
+        latestDataRef.current = null;
+      }
+    }, 500); // 2 updates per second is much smoother for charts
+
+    return () => clearInterval(ticker);
+  }, []);
 
   const currentPrice = data?.price || 0;
   const priceChange = useMemo(() => {
@@ -49,36 +72,11 @@ export default function DashboardPage() {
     return `${diff >= 0 ? "+" : ""}${diff.toFixed(2)}%`;
   }, [history]);
 
-  // Real vs Placeholder logic
   const stats = [
-    { 
-      title: "BTC/USDT Live", 
-      value: currentPrice > 0 ? `$${currentPrice.toLocaleString()}` : "CONNECTING...", 
-      change: priceChange, 
-      icon: Zap, 
-      color: "text-emerald-400" 
-    },
-    { 
-      title: "Real Throughput", 
-      value: `${throughput.toFixed(2)} KB/s`, 
-      change: `${pps} PKTS/s`, 
-      icon: Activity, 
-      color: "text-blue-400" 
-    },
-    { 
-      title: "Binance Parity", 
-      value: status === "connected" ? "ACTIVE" : "OFFLINE", 
-      change: "Direct Link", 
-      icon: Globe, 
-      color: "text-purple-400" 
-    },
-    { 
-      title: "System Latency", 
-      value: status === "connected" ? "3.8ms" : "--", 
-      change: "Real-Time", 
-      icon: Cpu, 
-      color: "text-orange-400" 
-    },
+    { title: "BTC/USDT Live", value: currentPrice > 0 ? `$${currentPrice.toLocaleString()}` : "CONNECTING...", change: priceChange, icon: Zap, color: "text-emerald-400" },
+    { title: "Real Throughput", value: `${throughput.toFixed(2)} KB/s`, change: `${pps} PKTS/s`, icon: Activity, color: "text-blue-400" },
+    { title: "Binance Parity", value: status === "connected" ? "ACTIVE" : "OFFLINE", change: "Direct Link", icon: Globe, color: "text-purple-400" },
+    { title: "System Latency", value: status === "connected" ? "3.8ms" : "--", change: "Real-Time", icon: Cpu, color: "text-orange-400" },
   ];
 
   return (
@@ -139,7 +137,7 @@ export default function DashboardPage() {
               <CardTitle className="text-xs font-black uppercase tracking-widest">Real-Time Market Pulse</CardTitle>
             </div>
             <div className="flex gap-2 text-[10px] font-black text-white/20">
-              <span>LIVE BINANCE FEED</span>
+              <span>BUFFERED STREAM (500MS)</span>
             </div>
           </CardHeader>
           <CardContent className="flex-1 p-0 relative">
@@ -174,7 +172,8 @@ export default function DashboardPage() {
                     strokeWidth={4}
                     fillOpacity={1}
                     fill="url(#colorPrice)"
-                    animationDuration={300}
+                    isAnimationActive={true}
+                    animationDuration={500}
                   />
                 </AreaChart>
               </ResponsiveContainer>
