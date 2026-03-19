@@ -170,7 +170,7 @@ The backend pushes normalized JSON payloads to frontend clients:
 
 ```json
 {
-  "symbol": "BTC/USD",
+  "symbol": "BTC/USDT",
   "price": 65001.12,
   "timestamp": 1700000000
 }
