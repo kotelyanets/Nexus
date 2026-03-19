@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
+	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -132,5 +136,38 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, rdb *redis.Client) 
 			log.Println("Client disconnected:", err)
 			return
 		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(reconnectDelay):
+		}
 	}
+}
+
+func mapBinanceTradeToPayload(raw []byte, now time.Time) (cryptoData, error) {
+	var tradeMsg binanceTradeMessage
+	if err := json.Unmarshal(raw, &tradeMsg); err != nil {
+		return cryptoData{}, err
+	}
+
+	price, err := strconv.ParseFloat(strings.TrimSpace(tradeMsg.Price), 64)
+	if err != nil {
+		return cryptoData{}, err
+	}
+
+	if math.IsNaN(price) || math.IsInf(price, 0) {
+		return cryptoData{}, errors.New("invalid non-finite price value")
+	}
+
+	timestamp := now.Unix()
+	if tradeMsg.TradeTime > 0 {
+		timestamp = tradeMsg.TradeTime / 1000
+	}
+
+	return cryptoData{
+		Symbol:    "BTC/USDT",
+		Price:     price,
+		Timestamp: timestamp,
+	}, nil
 }
