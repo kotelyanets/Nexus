@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"log"
 	"math"
 	"net"
@@ -25,39 +25,42 @@ var upgrader = websocket.Upgrader{
 var ctx = context.Background()
 
 const (
-	binanceTradeStreamURL = "wss://stream.binance.com:9443/ws/btcusdt@trade"
-	redisChannel          = "crypto_data"
-	writeTimeout          = 5 * time.Second
-	reconnectDelay        = 3 * time.Second
+	BinanceWSURL = "wss://stream.binance.com:9443/ws/btcusdt@trade"
+	RedisChannel = "trades"
 )
 
-type cryptoData struct {
+// Internal data format for Next.js frontend
+type CryptoData struct {
 	Symbol    string  `json:"symbol"`
 	Price     float64 `json:"price"`
-	Timestamp int64   `json:"timestamp"`
+	Timestamp int64   `json:"timestamp" tabular-nums:"true"`
 }
 
-type binanceTradeMessage struct {
+// Binance trade message format
+type BinanceTrade struct {
 	Price     string `json:"p"`
-	TradeTime int64  `json:"T"`
+	Symbol    string `json:"s"`
+	Timestamp int64  `json:"T"`
 }
 
 func main() {
-	// Connect to Redis
+	// 1. Connect to Redis
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
-		Password: "", // no password set
-		DB:       0,  // use default DB
+		Password: "", 
+		DB:       0,  
 	})
 
-	// Test Redis Connection
 	_, err := rdb.Ping(ctx).Result()
 	if err != nil {
 		log.Fatalf("Failed to connect to Redis: %v", err)
 	}
 	log.Println("Successfully connected to Redis.")
 
-	// Setup WebSocket route
+	// 2. Start Binance WebSocket Subscriber in background
+	go startBinanceSubscriber(rdb)
+
+	// 3. Setup Client WebSocket route
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		handleWebSocket(w, r, rdb)
 	})
@@ -68,6 +71,50 @@ func main() {
 	}
 }
 
+func startBinanceSubscriber(rdb *redis.Client) {
+	for {
+		log.Printf("Connecting to Binance WebSocket: %s", BinanceWSURL)
+		conn, _, err := websocket.DefaultDialer.Dial(BinanceWSURL, nil)
+		if err != nil {
+			log.Printf("Error connecting to Binance: %v. Retrying in 5s...", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		log.Println("Connected to Binance WebSocket.")
+
+		// Simple JSON mapping
+		for {
+			_, message, err := conn.ReadMessage()
+			if err != nil {
+				log.Printf("Binance connection closed: %v. Reconnecting...", err)
+				break
+			}
+
+			var trade BinanceTrade
+			if err := json.Unmarshal(message, &trade); err != nil {
+				continue
+			}
+
+			// Map to our internal struct
+			var price float64
+			fmt.Sscanf(trade.Price, "%f", &price)
+
+			data := CryptoData{
+				Symbol:    "BTC/USD", // Standardized symbol for UI
+				Price:     price,
+				Timestamp: trade.Timestamp / 1000, // Convert to seconds
+			}
+
+			// Publish to Redis
+			jsonData, _ := json.Marshal(data)
+			rdb.Publish(ctx, RedisChannel, jsonData)
+		}
+		conn.Close()
+		time.Sleep(1 * time.Second)
+	}
+}
+
 func handleWebSocket(w http.ResponseWriter, r *http.Request, rdb *redis.Client) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -75,78 +122,19 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, rdb *redis.Client) 
 		return
 	}
 	defer conn.Close()
-	log.Println("New WebSocket client connected")
+	log.Println("Client connected to local stream.")
 
-	clientCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	// Subscribe to Redis updates
+	pubsub := rdb.Subscribe(ctx, RedisChannel)
+	defer pubsub.Close()
 
-	if err := streamBinanceTrades(clientCtx, conn, rdb); err != nil {
-		log.Println("Stopped streaming Binance trades:", err)
-	}
-}
+	ch := pubsub.Channel()
 
-func streamBinanceTrades(ctx context.Context, clientConn *websocket.Conn, rdb *redis.Client) error {
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-		NetDialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		binanceConn, _, err := dialer.DialContext(ctx, binanceTradeStreamURL, nil)
+	for msg := range ch {
+		err := conn.WriteMessage(websocket.TextMessage, []byte(msg.Payload))
 		if err != nil {
-			log.Printf("Failed to connect to Binance stream: %v. Reconnecting in %s", err, reconnectDelay)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(reconnectDelay):
-				continue
-			}
-		}
-
-		log.Println("Connected to Binance BTCUSDT trade stream")
-
-		for {
-			_, rawMessage, err := binanceConn.ReadMessage()
-			if err != nil {
-				log.Printf("Binance stream read error: %v", err)
-				_ = binanceConn.Close()
-				break
-			}
-
-			payload, err := mapBinanceTradeToPayload(rawMessage, time.Now())
-			if err != nil {
-				log.Printf("Skipping invalid Binance trade payload: %v", err)
-				continue
-			}
-
-			payloadBytes, err := json.Marshal(payload)
-			if err != nil {
-				log.Printf("Failed to encode payload: %v", err)
-				continue
-			}
-
-			if err := rdb.Publish(ctx, redisChannel, payloadBytes).Err(); err != nil {
-				log.Printf("Failed to publish payload to Redis channel %q: %v", redisChannel, err)
-			}
-
-			if err := clientConn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
-				_ = binanceConn.Close()
-				return err
-			}
-
-			if err := clientConn.WriteMessage(websocket.TextMessage, payloadBytes); err != nil {
-				_ = binanceConn.Close()
-				return err
-			}
+			log.Println("Client disconnected:", err)
+			return
 		}
 
 		select {
