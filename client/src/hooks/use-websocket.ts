@@ -11,7 +11,23 @@ export interface CryptoData {
 export function useWebSocket(url: string) {
   const [data, setData] = useState<CryptoData | null>(null);
   const [status, setStatus] = useState<"connecting" | "connected" | "disconnected">("connecting");
+  const [throughput, setThroughput] = useState<number>(0); // KB/s
+  const [pps, setPps] = useState<number>(0); // Packets Per Second
+  
   const ws = useRef<WebSocket | null>(null);
+  const bytesRef = useRef<number>(0);
+  const packetsRef = useRef<number>(0);
+
+  // Interval to calculate throughput every second
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setThroughput(bytesRef.current / 1024);
+      setPps(packetsRef.current);
+      bytesRef.current = 0;
+      packetsRef.current = 0;
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   const connect = useCallback(() => {
     try {
@@ -24,6 +40,11 @@ export function useWebSocket(url: string) {
 
       ws.current.onmessage = (event) => {
         try {
+          // Track throughput
+          const msgSize = typeof event.data === "string" ? event.data.length : event.data.size || 0;
+          bytesRef.current += msgSize;
+          packetsRef.current += 1;
+
           const parsedData: CryptoData = JSON.parse(event.data);
           setData(parsedData);
         } catch (err) {
@@ -34,7 +55,6 @@ export function useWebSocket(url: string) {
       ws.current.onclose = () => {
         console.log("WebSocket Disconnected");
         setStatus("disconnected");
-        // Simple reconnect logic
         setTimeout(connect, 3000);
       };
 
@@ -55,5 +75,5 @@ export function useWebSocket(url: string) {
     };
   }, [connect]);
 
-  return { data, status };
+  return { data, status, throughput, pps };
 }
