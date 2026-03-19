@@ -3,6 +3,7 @@
 
 # Go
 bin/
+/backend/backend
 *.exe
 *.exe~
 *.dll
